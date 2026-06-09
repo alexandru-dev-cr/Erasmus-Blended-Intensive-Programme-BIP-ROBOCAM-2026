@@ -1,0 +1,121 @@
+import math
+import time
+from pyb import SPI, Pin
+from motors import Motors
+
+
+cs = Pin("P3", Pin.OUT_PP)
+cs.high()
+
+spi = SPI(2, SPI.MASTER, baudrate=100000, polarity=0, phase=0)
+
+
+WHO_AM_I = 0x0F
+CTRL_REG1 = 0x20
+CTRL_REG2 = 0x21
+CTRL_REG3 = 0x22
+CTRL_REG4 = 0x23
+MAG_X_L = 0x28
+MAG_X_H = 0x29
+MAG_Y_L = 0x2A
+MAG_Y_H = 0x2B
+
+
+def writeSPI(address, value):
+    cs.low()
+    spi.send(bytearray([address & 0x7F, value]))
+    cs.high()
+
+def readSPI(address):
+    cs.low()
+    spi.send(address | 0x80)
+    val = spi.recv(1)
+    cs.high()
+    return val[0]
+
+
+def init_sensor():
+    writeSPI(CTRL_REG1, 0x70)
+    writeSPI(CTRL_REG2, 0x00)
+    writeSPI(CTRL_REG3, 0x00)
+    writeSPI(CTRL_REG4, 0x0C)
+    time.sleep_ms(100)
+
+
+def read_mag_raw():
+    x = (readSPI(MAG_X_H) << 8) | readSPI(MAG_X_L)
+    y = (readSPI(MAG_Y_H) << 8) | readSPI(MAG_Y_L)
+
+    if x > 32767:
+        x -= 65536
+    if y > 32767:
+        y -= 65536
+
+    return x, y
+
+
+def calibrate():
+    print("\n=== CALIBRARE BUSOLA ===")
+    print("10 secunde")
+    
+    motors = Motors()
+    
+    X_min = Y_min = 32767
+    X_max = Y_max = -32768
+    
+   
+    motors.move(0, 80)  
+    start = time.ticks_ms()
+    
+    while time.ticks_ms() - start < 10000:
+        x, y = read_mag_raw()
+        X_min = min(X_min, x)
+        X_max = max(X_max, x)
+        Y_min = min(Y_min, y)
+        Y_max = max(Y_max, y)
+        time.sleep_ms(20)
+    
+    motors.stop()
+    
+    X_offset = (X_max + X_min) / 2
+    Y_offset = (Y_max + Y_min) / 2
+    X_scale = (X_max - X_min) / 2
+    Y_scale = (Y_max - Y_min) / 2
+    
+    print("\n=== CALIBRARE COMPLETĂ ===")
+    print(f"X_offset = {X_offset:.1f}")
+    print(f"Y_offset = {Y_offset:.1f}")
+    print(f"X_scale = {X_scale:.1f}")
+    print(f"Y_scale = {Y_scale:.1f}")
+    
+    return X_offset, Y_offset, X_scale, Y_scale
+
+
+def heading(X_offset, Y_offset, X_scale, Y_scale):
+    x, y = read_mag_raw()
+    x = (x - X_offset) / X_scale
+    y = (y - Y_offset) / Y_scale
+    angle = math.atan2(y, x) * 180 / math.pi
+    if angle < 0:
+        angle += 360
+    return angle
+
+
+print("\n=== CALIBRARE BUSOLA ===")
+
+init_sensor()
+
+id_sensor = readSPI(WHO_AM_I)
+print(f"ID Senzor: {id_sensor}")
+
+X_offset, Y_offset, X_scale, Y_scale = calibrate()
+
+print("\n=== TEST CITIRE HEADING ===")
+for i in range(20):
+    h = heading(X_offset, Y_offset, X_scale, Y_scale)
+    print(f"Heading {i+1}: {h:.1f}°")
+    time.sleep_ms(500)
+
+print("\n Calibrare completa!")
+
+
